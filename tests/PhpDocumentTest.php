@@ -12,16 +12,18 @@ use LanguageServer\ContentRetriever\FileSystemContentRetriever;
 use LanguageServer\Protocol\{SymbolKind, Position, ClientCapabilities};
 use LanguageServer\Index\{Index, ProjectIndex, DependenciesIndex};
 use PhpParser\Node;
+use Microsoft\PhpParser as Tolerant;
 
 class PhpDocumentTest extends TestCase
 {
     public function createDocument(string $uri, string $content)
     {
         $parser = new Parser;
+        $tolerantParser = new Tolerant\Parser();
         $docBlockFactory = DocBlockFactory::createInstance();
         $index = new Index;
         $definitionResolver = new DefinitionResolver($index);
-        return new PhpDocument($uri, $content, $index, $parser, $docBlockFactory, $definitionResolver);
+        return new PhpDocument($uri, $content, $index, $parser, $tolerantParser, $docBlockFactory, $definitionResolver);
     }
 
     public function testParsesVariableVariables()
