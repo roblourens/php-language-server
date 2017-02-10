@@ -150,7 +150,7 @@ class CompletionProvider
                 $prefixes = [$node->class instanceof Node\Name ? (string)$node->class : ''];
             }
             $prefixes = $this->expandParentFqns($prefixes);
-            // If we are just filtering by the class, add the appropiate operator to the prefix
+            // If we are just filtering by the class, add the appropriate operator to the prefix
             // to filter the type of symbol
             foreach ($prefixes as &$prefix) {
                 if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\PropertyFetch) {
@@ -233,7 +233,7 @@ class CompletionProvider
                         )
                     )
                     // Only suggest classes for `new`
-                    && (!($node instanceof Node\Expr\New_) || $def->canBeInstantiated)
+                    && (!($node instanceof Node\Expr\New_) || $def->isClass)
                 ) {
                     $item = CompletionItem::fromDefinition($def);
                     // Find the shortest name to reference the symbol

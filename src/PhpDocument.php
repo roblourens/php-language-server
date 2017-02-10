@@ -29,6 +29,11 @@ class PhpDocument
     private $parser;
 
     /**
+     * @var Tolerant\Parser
+     */
+    private $tolerantParser;
+
+    /**
      * The DocBlockFactory instance to parse docblocks
      *
      * @var DocBlockFactory
@@ -69,6 +74,14 @@ class PhpDocument
     private $stmts;
 
     /**
+     * The AST of the document
+     *
+     * @var Tolerant\Node
+     */
+    private $tolerantStmts;
+
+
+    /**
      * Map from fully qualified name (FQN) to Definition
      *
      * @var Definition[]
@@ -77,7 +90,7 @@ class PhpDocument
 
     /**
      * Map from fully qualified name (FQN) to Node
-     *
+     * TODO - these are *ONLY* used in tests
      * @var Node[]
      */
     private $definitionNodes;
@@ -155,27 +168,58 @@ class PhpDocument
         // Unregister old references
         if (isset($this->referenceNodes)) {
             foreach ($this->referenceNodes as $fqn => $node) {
-                $this->index->removeReferenceUri($fqn, $this->uri);
+                $this->index->removeReferenceUri($fqn);
             }
         }
 
-        $this->referenceNodes = null;
-        $this->definitions = null;
-        $this->definitionNodes = null;
+        $this->referenceNodes = [];
+        $this->definitions = [];
+        $this->definitionNodes = [];
 
         $errorHandler = new ErrorHandler\Collecting;
         $stmts = $this->parser->parse($content, $errorHandler);
+        $tolerantStmts = $this->tolerantParser->parseSourceFile($content, $this->uri);
+        $this->tolerantStmts = $tolerantStmts;
 
         $this->diagnostics = [];
-        foreach ($errorHandler->getErrors() as $error) {
-            $this->diagnostics[] = Diagnostic::fromError($error, $this->content, DiagnosticSeverity::ERROR, 'php');
+//        foreach ($errorHandler->getErrors() as $error) {
+//            $this->diagnostics[] = Diagnostic::fromError($error, $this->content, DiagnosticSeverity::ERROR, 'php');
+//        }
+        foreach (Tolerant\DiagnosticsProvider::getDiagnostics($tolerantStmts) as $_error) {
+            $range = Tolerant\PositionUtilities::getRangeFromPosition($_error->start, $_error->length, $content);
+
+            $this->diagnostics[] = new Diagnostic(
+                $_error->message,
+                new Range(
+                    new Position($range->start->line, $range->start->character),
+                    new Position($range->end->line, $range->start->character)
+                )
+            );
         }
 
+        foreach ($tolerantStmts->getDescendantNodes() as $node) {
+            $fqn = DefinitionResolver::getDefinedFqn($node);
+            // Only index definitions with an FQN (no variables)
+            if ($fqn === null) {
+                continue;
+            }
+            $this->definitionNodes[$fqn] = $node;
+            $this->definitions[$fqn] = $this->definitionResolver->createDefinitionFromNode($node, $fqn);
+        }
+
+        foreach ($this->definitions as $fqn => $definition) {
+            $this->index->setDefinition($fqn, $definition);
+        }
+
+        $this->tolerantStmts = $tolerantStmts;
+
         // $stmts can be null in case of a fatal parsing error <- Interesting. When do fatal parsing errors occur?
-        if ($stmts) {
+        if (false && $stmts) {
             $traverser = new NodeTraverser;
 
             // Resolve aliased names to FQNs
+            // TODO[mousetraps] NameResolver produces errors of the type - 'Cannot use %s%s as %s because the name is already in use'
+            // That that said, these errors are not getting reported at this time.
             $traverser->addVisitor(new NameResolver($errorHandler));
 
             // Add parentNode, previousSibling, nextSibling attributes
@@ -280,29 +324,27 @@ class PhpDocument
     /**
      * Returns the AST of the document
      *
-     * @return Node[]
+     * @return Tolerant\Node
      */
-    public function getStmts(): array
+    public function getStmts(): Tolerant\Node
     {
-        return $this->stmts;
+        return $this->tolerantStmts;
     }
 
     /**
      * Returns the node at a specified position
      *
      * @param Position $position
-     * @return Node|null
+     * @return Tolerant\Node|null
      */
     public function getNodeAtPosition(Position $position)
     {
-        if ($this->stmts === null) {
+        if ($this->tolerantStmts === null) {
             return null;
         }
-        $traverser = new NodeTraverser;
-        $finder = new NodeAtPositionFinder($position);
-        $traverser->addVisitor($finder);
-        $traverser->traverse($this->stmts);
-        return $finder->node;
+        $offset = $position->toOffset($this->tolerantStmts->getFileContents());
+        var_dump($offset);
+        return $this->tolerantStmts->getDescendantNodeAtPosition($offset);
     }
 
     /**

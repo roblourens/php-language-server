@@ -57,7 +57,7 @@ class Definition
      *
      * @var bool
      */
-    public $canBeInstantiated;
+    public $isClass;
 
     /**
      * @var Protocol\SymbolInformation

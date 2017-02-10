@@ -174,7 +174,7 @@ class Index implements ReadableIndex
      * @param string $uri The URI
      * @return void
      */
-    public function removeReferenceUri(string $fqn, string $uri)
+    public function removeReferenceUri(string $fqn)
     {
         if (!isset($this->references[$fqn])) {
             return;

@@ -3,6 +3,7 @@
 namespace LanguageServer\Protocol;
 
 use PhpParser\Node;
+use Microsoft\PhpParser as Tolerant;
 use Exception;
 
 /**
@@ -42,31 +43,32 @@ class SymbolInformation
     /**
      * Converts a Node to a SymbolInformation
      *
-     * @param Node $node
+     * @param Tolerant\Node $node
      * @param string $fqn If given, $containerName will be extracted from it
      * @return self|null
      */
-    public static function fromNode(Node $node, string $fqn = null)
+    public static function fromNode(Tolerant\Node $node, string $fqn = null)
     {
-        $parent = $node->getAttribute('parentNode');
         $symbol = new self;
-        if ($node instanceof Node\Stmt\Class_) {
+        if ($node instanceof Tolerant\Node\Statement\ClassDeclaration) {
             $symbol->kind = SymbolKind::CLASS_;
-        } else if ($node instanceof Node\Stmt\Trait_) {
+        } else if ($node instanceof Tolerant\Node\Statement\TraitDeclaration) {
             $symbol->kind = SymbolKind::CLASS_;
-        } else if ($node instanceof Node\Stmt\Interface_) {
+        } else if ($node instanceof Tolerant\Node\Statement\InterfaceDeclaration) {
             $symbol->kind = SymbolKind::INTERFACE;
-        } else if ($node instanceof Node\Name && $parent instanceof Node\Stmt\Namespace_) {
+        } else if ($node instanceof Tolerant\Node\Statement\NamespaceDefinition) {
             $symbol->kind = SymbolKind::NAMESPACE;
-        } else if ($node instanceof Node\Stmt\Function_) {
+        } else if ($node instanceof Tolerant\Node\Statement\FunctionDeclaration) {
             $symbol->kind = SymbolKind::FUNCTION;
-        } else if ($node instanceof Node\Stmt\ClassMethod) {
+        } else if ($node instanceof Tolerant\Node\MethodDeclaration) {
             $symbol->kind = SymbolKind::METHOD;
-        } else if ($node instanceof Node\Stmt\PropertyProperty) {
+        } else if ($node instanceof Tolerant\Node\Expression\Variable && $node->getFirstAncestor(Tolerant\Node\PropertyDeclaration::class) !== null) {
             $symbol->kind = SymbolKind::PROPERTY;
-        } else if ($node instanceof Node\Const_) {
+        } else if ($node instanceof Tolerant\Node\ConstElement) {
             $symbol->kind = SymbolKind::CONSTANT;
-        } else if (
+        }
+/*
+        else if (
             (
                 ($node instanceof Node\Expr\Assign || $node instanceof Node\Expr\AssignOp)
                 && $node->var instanceof Node\Expr\Variable
@@ -88,8 +90,20 @@ class SymbolInformation
             $symbol->name = (string)$node->name;
         } else {
             return null;
+        }*/
+        else {
+            return null;
         }
-        $symbol->location = Location::fromNode($node);
+
+        if (isset($node->name)) {
+            if ($node->name instanceof Tolerant\Token) {
+                $symbol->name = $node->name->getText($node->getFileContents());
+            } elseif ($node->name instanceof Tolerant\Node) {
+                $symbol->name = $node->name->getText();
+            }
+        }
+
+        $symbol->location = Location::fromTolerantNode($node);
         if ($fqn !== null) {
             $parts = preg_split('/(::|->|\\\\)/', $fqn);
             array_pop($parts);

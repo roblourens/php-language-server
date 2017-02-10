@@ -248,21 +248,22 @@ class LanguageServer extends AdvancedJsonRpc\Dispatcher
             // Support "Find all symbols in workspace"
             $serverCapabilities->workspaceSymbolProvider = true;
             // Support "Format Code"
-            $serverCapabilities->documentFormattingProvider = true;
+            $serverCapabilities->documentFormattingProvider = false;
             // Support "Go to definition"
-            $serverCapabilities->definitionProvider = true;
+            $serverCapabilities->definitionProvider = false;
             // Support "Find all references"
-            $serverCapabilities->referencesProvider = true;
+            $serverCapabilities->referencesProvider = false;
             // Support "Hover"
-            $serverCapabilities->hoverProvider = true;
+            $serverCapabilities->hoverProvider = false;
             // Support "Completion"
-            $serverCapabilities->completionProvider = new CompletionOptions;
-            $serverCapabilities->completionProvider->resolveProvider = false;
-            $serverCapabilities->completionProvider->triggerCharacters = ['$', '>'];
+            $serverCapabilities->completionProvider = null;
+//            $serverCapabilities->completionProvider = new CompletionOptions;
+//            $serverCapabilities->completionProvider->resolveProvider = false;
+//            $serverCapabilities->completionProvider->triggerCharacters = ['$', '>'];
             // Support global references
-            $serverCapabilities->xworkspaceReferencesProvider = true;
-            $serverCapabilities->xdefinitionProvider = true;
-            $serverCapabilities->xdependenciesProvider = true;
+            $serverCapabilities->xworkspaceReferencesProvider = false;
+            $serverCapabilities->xdefinitionProvider = false;
+            $serverCapabilities->xdependenciesProvider = false;
 
             return new InitializeResult($serverCapabilities);
         });
@@ -355,7 +356,7 @@ class LanguageServer extends AdvancedJsonRpc\Dispatcher
                 $mem = (int)(memory_get_usage(true) / (1024 * 1024));
                 $this->client->window->logMessage(
                     MessageType::INFO,
-                    "All $count PHP files parsed in $duration seconds. $mem MiB allocated."
+                    "All $count PHP files parsed in $duration seconds. $mem MiB allocated!!!"
                 );
             }
         });

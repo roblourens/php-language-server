@@ -38,7 +38,7 @@ class ReferencesCollector extends NodeVisitorAbstract
         $fqn = $this->definitionResolver->resolveReferenceNodeToFqn($node);
         if ($fqn) {
             $parent = $node->getAttribute('parentNode');
-            $grandParent = $parent ? $parent->getAttribute('parentNode') : null;
+
             $this->addReference($fqn, $node);
             if (
                 $node instanceof Node\Name
