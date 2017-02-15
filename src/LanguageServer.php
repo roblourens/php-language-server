@@ -250,7 +250,7 @@ class LanguageServer extends AdvancedJsonRpc\Dispatcher
             // Support "Format Code"
             $serverCapabilities->documentFormattingProvider = false;
             // Support "Go to definition"
-            $serverCapabilities->definitionProvider = false;
+            $serverCapabilities->definitionProvider = true;
             // Support "Find all references"
             $serverCapabilities->referencesProvider = false;
             // Support "Hover"

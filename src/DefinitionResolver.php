@@ -193,8 +193,8 @@ class DefinitionResolver
             }
         }
         $def->symbolInformation = SymbolInformation::fromNode($node, $fqn);
-//        $def->type = $this->getTypeFromNode($node); TODO
-        $def->type = new Types\Mixed;
+        $def->type = $this->getTypeFromNode($node); //TODO
+//        $def->type = new Types\Mixed;
         $def->declarationLine = $this->getDeclarationLineFromNode($node);
         $def->documentation = $this->getDocumentationFromNode($node);
         return $def;
@@ -229,10 +229,20 @@ class DefinitionResolver
         }
         // If the node is a function or constant, it could be namespaced, but PHP falls back to global
         // http://php.net/manual/en/language.namespaces.fallback.php
-        $parent = $node->getAttribute('parentNode');
-        $globalFallback = $parent instanceof Node\Expr\ConstFetch || $parent instanceof Node\Expr\FuncCall;
+        $globalFallback = $this->isConstantFetch($node) || $node->getFirstAncestor(Tolerant\Node\Expression\CallExpression::class) !== null;
         // Return the Definition object from the index index
         return $this->index->getDefinition($fqn, $globalFallback);
+    }
+
+    private function isConstantFetch(Tolerant\Node $node) : bool {
+        return
+            ($node->parent instanceof Tolerant\Node\Statement\ExpressionStatement || $node->parent instanceof Tolerant\Node\Expression) &&
+            !(
+                $node->parent instanceof Tolerant\Node\Expression\MemberAccessExpression || $node->parent instanceof Tolerant\Node\Expression\CallExpression ||
+                $node->parent instanceof Tolerant\Node\Expression\ObjectCreationExpression ||
+                $node->parent instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression || $node->parent instanceof Tolerant\Node\Expression\AnonymousFunctionCreationExpression ||
+                ($node->parent instanceof Tolerant\Node\Expression\BinaryExpression && $node->parent->operator->kind === Tolerant\TokenKind::InstanceOfKeyword)
+            );
     }
 
     /**
@@ -269,34 +279,33 @@ class DefinitionResolver
      */
     public function resolveReferenceNodeToFqn(Tolerant\Node $node)
     {
-        $parent = $node->getAttribute('parentNode');
+        // TODO all name tokens should be a part of a node
+        $parent = $node->getParent();
 
-        if (
-            $node instanceof Node\Name && (
-                $parent instanceof Node\Stmt\ClassLike
-                || $parent instanceof Node\Param
-                || $parent instanceof Node\FunctionLike
-                || $parent instanceof Node\Stmt\GroupUse
-                || $parent instanceof Node\Expr\New_
-                || $parent instanceof Node\Expr\StaticCall
-                || $parent instanceof Node\Expr\ClassConstFetch
-                || $parent instanceof Node\Expr\StaticPropertyFetch
-                || $parent instanceof Node\Expr\Instanceof_
-            )
-        ) {
+        if ($node->parent instanceof Tolerant\Node\QualifiedName) {
+            $node = $node->parent; // squash "qualified name parts"
             // For extends, implements, type hints and classes of classes of static calls use the name directly
-            $name = (string)$node;
-        // Only the name node should be considered a reference, not the UseUse node itself
-        }
-        else if ($parent instanceof Node\Stmt\UseUse) {
-            $name = (string)$parent->name;
-            $grandParent = $parent->getAttribute('parentNode');
-            if ($grandParent instanceof Node\Stmt\GroupUse) {
-                $name = $grandParent->prefix . '\\' . $name;
-            } else if ($grandParent instanceof Node\Stmt\Use_ && $grandParent->type === Node\Stmt\Use_::TYPE_FUNCTION) {
-                $name .= '()';
+            $name = (string)$node->getResolvedName() ?? $node->getText();
+            if (($useClause = $node->getFirstAncestor(Tolerant\Node\NamespaceUseGroupClause::class, Tolerant\Node\Statement\NamespaceUseDeclaration::class)) !== null) {
+                if ($useClause instanceof Tolerant\Node\NamespaceUseGroupClause) {
+                    $prefix = $useClause->parent->parent->namespaceName;
+                    $prefix = $prefix === null ? "" : $prefix->getText();
+
+                    $name = $prefix . "\\" . $name;
+
+                    if ($useClause->functionOrConst === null) {
+                        $useClause = $node->getFirstAncestor(Tolerant\Node\Statement\NamespaceUseDeclaration::class);
+                    }
+                }
+
+                if ($useClause->functionOrConst->kind === Tolerant\TokenKind::FunctionKeyword) {
+                    $name .= "()";
+                }
             }
+
+            return $name;
         }
+/*
         else if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\PropertyFetch) {
             if ($node->name instanceof Node\Expr) {
                 // Cannot get definition if right-hand side is expression
@@ -412,7 +421,7 @@ class DefinitionResolver
         ) {
             $name .= '()';
         }
-        return $name;
+        return $name;*/
     }
 
     /**
@@ -772,7 +781,7 @@ class DefinitionResolver
      * @param Node $node
      * @return \phpDocumentor\Type|null
      */
-    public function getTypeFromNode(Node $node)
+    public function getTypeFromNode(Tolerant\Node $node)
     {
         if ($node instanceof Node\Param) {
             // Parameters
