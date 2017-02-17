@@ -186,7 +186,7 @@ class DefinitionResolver
             // TODO what about class interfaces
         } else if ($node instanceof Tolerant\Node\Statement\InterfaceDeclaration) {
             $def->extends = [];
-            if ($node->interfaceBaseClause->interfaceNameList !== null) {
+            if ($node->interfaceBaseClause !== null && $node->interfaceBaseClause->interfaceNameList !== null) {
                 foreach ($node->interfaceBaseClause->interfaceNameList->getChildNodes() as $n) {
                     $def->extends[] = (string)$n;
                 }
@@ -973,7 +973,7 @@ class DefinitionResolver
             if ($constDeclaration instanceof Tolerant\Node\ClassConstDeclaration) {
                 // Class constant: use ClassName::CONSTANT_NAME as name
                 $classDeclaration = $constDeclaration->getFirstAncestor(Tolerant\Node\Statement\ClassDeclaration::class);
-                if (!isset($class->name) || $class->name instanceof Node\Expr) {
+                if (!isset($classDeclaration->name)) {
                     return null;
                 }
                 return (string)$classDeclaration->getNamespacedName() . '::' . $node->getName();

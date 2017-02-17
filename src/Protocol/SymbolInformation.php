@@ -98,6 +98,9 @@ class SymbolInformation
         if (isset($node->name)) {
             if ($node->name instanceof Tolerant\Token) {
                 $symbol->name = $node->name->getText($node->getFileContents());
+                if ($node->name->kind === Tolerant\TokenKind::VariableName) {
+                    $symbol->name = substr($symbol->name, 1);
+                }
             } elseif ($node->name instanceof Tolerant\Node) {
                 $symbol->name = $node->name->getText();
             }
