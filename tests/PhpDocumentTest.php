@@ -37,7 +37,8 @@ class PhpDocumentTest extends TestCase
     {
         $document = $this->createDocument('whatever', "<?php\n$\$a = new SomeClass;");
         $node = $document->getNodeAtPosition(new Position(1, 13));
-        $this->assertInstanceOf(Node\Name\FullyQualified::class, $node);
+        // TODO get rid of qualified name parts
+        $this->assertInstanceOf(Tolerant\Node\DelimitedList\QualifiedNameParts::class, $node);
         $this->assertEquals('SomeClass', (string)$node);
     }
 

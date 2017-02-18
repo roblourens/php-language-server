@@ -113,18 +113,14 @@ class DefinitionResolver
 
         // For parameters, parse the documentation to get the parameter tag.
         if ($node instanceof Tolerant\Node\Parameter) {
-            $functionLikeDeclaration = $node->getFirstAncestor(
-                Tolerant\Node\Statement\FunctionDeclaration::class,
-                Tolerant\Node\MethodDeclaration::class,
-                Tolerant\Node\Expression\AnonymousFunctionCreationExpression::class
-            );
-
+            $functionLikeDeclaration = $this->getFunctionLikeDeclarationFromParameter($node);
             $variableName = $node->variableName->getText($node->getFileContents());
-
             $docBlock = $this->getDocBlock($functionLikeDeclaration);
 
             if ($docBlock !== null) {
-                return $this->getDocumentationForParameter($docBlock, $variableName);
+                $parameterDocBlockTag = $this->getDocBlockTagForParameter($docBlock, $variableName);
+                return $parameterDocBlockTag !== null ? $parameterDocBlockTag->getDescription()->render() : null;
+
             }
         }
         // for everything else, get the doc block summary corresponding to the current node.
@@ -134,6 +130,21 @@ class DefinitionResolver
                 return $docBlock->getSummary();
             }
         }
+    }
+
+    function getFunctionLikeDeclarationFromParameter(Tolerant\Node $node) {
+        return $node->getFirstAncestor(
+            Tolerant\Node\Statement\FunctionDeclaration::class,
+            Tolerant\Node\MethodDeclaration::class,
+            Tolerant\Node\Expression\AnonymousFunctionCreationExpression::class
+        );
+    }
+
+    function isFunctionLike(Tolerant\Node $node) {
+        return
+            $node instanceof Tolerant\Node\Statement\FunctionDeclaration ||
+            $node instanceof Tolerant\Node\MethodDeclaration ||
+            $node instanceof Tolerant\Node\Expression\AnonymousFunctionCreationExpression;
     }
 
     function getDocBlock(Tolerant\Node $node) {
@@ -215,7 +226,7 @@ class DefinitionResolver
                 return $this->index->getDefinition($fqn, false);
             }
             // Resolve the variable to a definition node (assignment, param or closure use)
-            $defNode = self::resolveVariableToNode($node);
+            $defNode = self::getDefinitionNodeForVariable($node);
             if ($defNode === null) {
                 return null;
             }
@@ -304,6 +315,26 @@ class DefinitionResolver
             }
 
             return $name;
+        } elseif ($node instanceof Tolerant\Node\Expression\CallExpression || ($node = $node->getFirstAncestor(Tolerant\Node\Expression\CallExpression::class)) !== null) {
+            if ($node->callableExpression instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression) {
+                $qualifier = $node->callableExpression->scopeResolutionQualifier;
+                if ($qualifier instanceof Tolerant\Token) {
+                    // resolve this/self/parent
+                } elseif ($qualifier instanceof Tolerant\Node\QualifiedName) {
+                    $name = $qualifier->getResolvedName() ?? $qualifier->getNamespacedName();
+                    $name .= "::";
+                    $memberName = $node->callableExpression->memberName;
+                    if ($memberName instanceof Tolerant\Token) {
+                        $name .= $memberName->getText($node->getFileContents());
+                    } elseif ($memberName instanceof Tolerant\Node\Expression\Variable) {
+                        $name .= $memberName->getText();
+                    } else {
+                        return null;
+                    }
+                    $name .= "()";
+                    return $name;
+                }
+            }
         }
 /*
         else if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\PropertyFetch) {
@@ -446,7 +477,7 @@ class DefinitionResolver
      * @param Node\Expr\Variable|Node\Expr\ClosureUse $var The variable access
      * @return Node\Expr\Assign|Node\Param|Node\Expr\ClosureUse|null
      */
-    private static function resolveVariableToNode(Tolerant\Node $var)
+    private static function getDefinitionNodeForVariable(Tolerant\Node $var)
     {
         // When a use is passed, start outside the closure to not return immediately
         if ($var instanceof Node\Expr\ClosureUse) {
@@ -497,16 +528,16 @@ class DefinitionResolver
      * @param \PhpParser\Node\Expr $expr
      * @return \phpDocumentor\Type
      */
-    public function resolveExpressionNodeToType(Node\Expr $expr): Type
+    public function getTypeFromExpressionNode(Node\Expr $expr): Type
     {
         if ($expr instanceof Node\Expr\Variable || $expr instanceof Node\Expr\ClosureUse) {
             if ($expr instanceof Node\Expr\Variable && $expr->name === 'this') {
                 return new Types\This;
             }
             // Find variable definition
-            $defNode = $this->resolveVariableToNode($expr);
+            $defNode = $this->getDefinitionNodeForVariable($expr);
             if ($defNode instanceof Node\Expr) {
-                return $this->resolveExpressionNodeToType($defNode);
+                return $this->getTypeFromExpressionNode($defNode);
             }
             if ($defNode instanceof Node\Param) {
                 return $this->getTypeFromNode($defNode);
@@ -540,7 +571,7 @@ class DefinitionResolver
                 return new Types\Mixed;
             }
             // Resolve object
-            $objType = $this->resolveExpressionNodeToType($expr->var);
+            $objType = $this->getTypeFromExpressionNode($expr->var);
             if (!($objType instanceof Types\Compound)) {
                 $objType = new Types\Compound([$objType]);
             }
@@ -570,7 +601,7 @@ class DefinitionResolver
             || $expr instanceof Node\Expr\StaticPropertyFetch
             || $expr instanceof Node\Expr\ClassConstFetch
         ) {
-            $classType = self::resolveClassNameToType($expr->class);
+            $classType = self::getTypeFromClassName($expr->class);
             if (!($classType instanceof Types\Object_) || $classType->getFqsen() === null || $expr->name instanceof Node\Expr) {
                 return new Types\Mixed;
             }
@@ -589,30 +620,30 @@ class DefinitionResolver
             return $def->type;
         }
         if ($expr instanceof Node\Expr\New_) {
-            return self::resolveClassNameToType($expr->class);
+            return self::getTypeFromClassName($expr->class);
         }
         if ($expr instanceof Node\Expr\Clone_ || $expr instanceof Node\Expr\Assign) {
-            return $this->resolveExpressionNodeToType($expr->expr);
+            return $this->getTypeFromExpressionNode($expr->expr);
         }
         if ($expr instanceof Node\Expr\Ternary) {
             // ?:
             if ($expr->if === null) {
                 return new Types\Compound([
-                    $this->resolveExpressionNodeToType($expr->cond),
-                    $this->resolveExpressionNodeToType($expr->else)
+                    $this->getTypeFromExpressionNode($expr->cond),
+                    $this->getTypeFromExpressionNode($expr->else)
                 ]);
             }
             // Ternary is a compound of the two possible values
             return new Types\Compound([
-                $this->resolveExpressionNodeToType($expr->if),
-                $this->resolveExpressionNodeToType($expr->else)
+                $this->getTypeFromExpressionNode($expr->if),
+                $this->getTypeFromExpressionNode($expr->else)
             ]);
         }
         if ($expr instanceof Node\Expr\BinaryOp\Coalesce) {
             // ?? operator
             return new Types\Compound([
-                $this->resolveExpressionNodeToType($expr->left),
-                $this->resolveExpressionNodeToType($expr->right)
+                $this->getTypeFromExpressionNode($expr->left),
+                $this->getTypeFromExpressionNode($expr->right)
             ]);
         }
         if (
@@ -663,8 +694,8 @@ class DefinitionResolver
             || $expr instanceof Node\Expr\AssignOp\Mul
         ) {
             if (
-                $this->resolveExpressionNodeToType($expr->left) instanceof Types\Integer_
-                && $this->resolveExpressionNodeToType($expr->right) instanceof Types\Integer_
+                $this->getTypeFromExpressionNode($expr->left) instanceof Types\Integer_
+                && $this->getTypeFromExpressionNode($expr->right) instanceof Types\Integer_
             ) {
                 return new Types\Integer;
             }
@@ -692,8 +723,8 @@ class DefinitionResolver
             $valueTypes = [];
             $keyTypes = [];
             foreach ($expr->items as $item) {
-                $valueTypes[] = $this->resolveExpressionNodeToType($item->value);
-                $keyTypes[] = $item->key ? $this->resolveExpressionNodeToType($item->key) : new Types\Integer;
+                $valueTypes[] = $this->getTypeFromExpressionNode($item->value);
+                $keyTypes[] = $item->key ? $this->getTypeFromExpressionNode($item->key) : new Types\Integer;
             }
             $valueTypes = array_unique($keyTypes);
             $keyTypes = array_unique($keyTypes);
@@ -714,7 +745,7 @@ class DefinitionResolver
             return new Types\Array_($valueType, $keyType);
         }
         if ($expr instanceof Node\Expr\ArrayDimFetch) {
-            $varType = $this->resolveExpressionNodeToType($expr->var);
+            $varType = $this->getTypeFromExpressionNode($expr->var);
             if (!($varType instanceof Types\Array_)) {
                 return new Types\Mixed;
             }
@@ -734,7 +765,7 @@ class DefinitionResolver
      * @param Node $class
      * @return Type
      */
-    private static function resolveClassNameToType(Node $class): Type
+    private static function getTypeFromClassName(Node $class): Type
     {
         if ($class instanceof Node\Expr) {
             return new Types\Mixed;
@@ -779,35 +810,36 @@ class DefinitionResolver
      * Returns null if the node does not have a type.
      *
      * @param Node $node
-     * @return \phpDocumentor\Type|null
+     * @return \phpDocumentor\Reflection\Type|null
      */
     public function getTypeFromNode(Tolerant\Node $node)
     {
-        if ($node instanceof Node\Param) {
+        // For parameters, get the type of the parameter [first from doc block, then from param type]
+        if ($node instanceof Tolerant\Node\Parameter) {
             // Parameters
-            $docBlock = $node->getAttribute('parentNode')->getAttribute('docBlock');
+            // Get the doc block for the the function call
+            $functionLikeDeclaration = $this->getFunctionLikeDeclarationFromParameter($node);
+            $variableName = $node->variableName->getText($node->getFileContents());
+            $docBlock = $this->getDocBlock($functionLikeDeclaration);
+
             if ($docBlock !== null) {
-                // Use @param tag
-                foreach ($docBlock->getTagsByName('param') as $paramTag) {
-                    if ($paramTag->getVariableName() === $node->name) {
-                        if ($paramTag->getType() === null) {
-                            break;
-                        }
-                        return $paramTag->getType();
-                    }
+                $parameterDocBlockTag = $this->getDocBlockTagForParameter($docBlock, $variableName);
+                if ($parameterDocBlockTag->getType() !== null) {
+                    return $parameterDocBlockTag->getType();
                 }
             }
-            if ($node->type !== null) {
+
+            if ($node->typeDeclaration !== null) {
                 // Use PHP7 return type hint
-                if (is_string($node->type)) {
+                if ($node->typeDeclaration instanceof Tolerant\Token) {
                     // Resolve a string like "bool" to a type object
-                    $type = $this->typeResolver->resolve($node->type);
+                    $type = $this->typeResolver->resolve($node->typeDeclaration->getText($node->getFileContents()));
                 } else {
-                    $type = new Types\Object_(new Fqsen('\\' . (string)$node->type));
+                    $type = new Types\Object_(new Fqsen('\\' . (string)$node->typeDeclaration->getResolvedName()));
                 }
             }
             if ($node->default !== null) {
-                $defaultType = $this->resolveExpressionNodeToType($node->default);
+                $defaultType = $this->getTypeFromExpressionNode($node->default);
                 if (isset($type) && !is_a($type, get_class($defaultType))) {
                     $type = new Types\Compound([$type, $defaultType]);
                 } else {
@@ -816,9 +848,10 @@ class DefinitionResolver
             }
             return $type ?? new Types\Mixed;
         }
-        if ($node instanceof Node\FunctionLike) {
+        // for functions and methods, get the return type [first from doc block, then from return type]
+        if ($this->isFunctionLike($node)) {
             // Functions/methods
-            $docBlock = $node->getAttribute('docBlock');
+            $docBlock = $this->getDocBlock($node);
             if (
                 $docBlock !== null
                 && !empty($returnTags = $docBlock->getTagsByName('return'))
@@ -829,48 +862,48 @@ class DefinitionResolver
             }
             if ($node->returnType !== null) {
                 // Use PHP7 return type hint
-                if (is_string($node->returnType)) {
+                if ($node->returnType instanceof Tolerant\Token) {
                     // Resolve a string like "bool" to a type object
-                    return $this->typeResolver->resolve($node->returnType);
+                    return $this->typeResolver->resolve($node->returnType->getText($node->getFileContents()));
                 }
-                return new Types\Object_(new Fqsen('\\' . (string)$node->returnType));
+                return new Types\Object_(new Fqsen('\\' . (string)$node->returnType->getResolvedName()));
             }
             // Unknown return type
             return new Types\Mixed;
         }
+
+        // for variables / assignments, get the documented type the assignment resolves to.
         if ($node instanceof Node\Expr\Variable) {
-            $node = $node->getAttribute('parentNode');
+            $node = $node->getFirstAncestor(Tolerant\Node\Expression\AssignmentExpression::class) ?? $node;
         }
         if (
-            $node instanceof Node\Stmt\PropertyProperty
-            || $node instanceof Node\Const_
-            || $node instanceof Node\Expr\Assign
-            || $node instanceof Node\Expr\AssignOp
-        ) {
-            if ($node instanceof Node\Stmt\PropertyProperty || $node instanceof Node\Const_) {
-                $docBlockHolder = $node->getAttribute('parentNode');
-            } else {
-                $docBlockHolder = $node;
-            }
+            ($declarationNode = $node->getFirstAncestor(
+                Tolerant\Node\PropertyDeclaration::class,
+                Tolerant\Node\Statement\ConstDeclaration::class,
+                Tolerant\Node\ClassConstDeclaration::class)) !== null ||
+            $node instanceof Tolerant\Node\Expression\AssignmentExpression)
+        {
+            $declarationNode = $declarationNode ?? $node;
+
             // Property, constant or variable
             // Use @var tag
             if (
-                isset($docBlockHolder)
-                && ($docBlock = $docBlockHolder->getAttribute('docBlock'))
+                ($docBlock = $this->getDocBlock($declarationNode))
                 && !empty($varTags = $docBlock->getTagsByName('var'))
                 && ($type = $varTags[0]->getType())
             ) {
                 return $type;
             }
             // Resolve the expression
-            if ($node instanceof Node\Stmt\PropertyProperty) {
-                if ($node->default) {
-                    return $this->resolveExpressionNodeToType($node->default);
+            if ($declarationNode instanceof Tolerant\Node\PropertyDeclaration) {
+                // TODO should have default
+                if ($node->rightOperand !== null) {
+                    return $this->getTypeFromExpressionNode($node->rightOperand);
                 }
-            } else if ($node instanceof Node\Const_) {
-                return $this->resolveExpressionNodeToType($node->value);
-            } else if ($node instanceof Node\Expr\Assign || $node instanceof Node\Expr\AssignOp) {
-                return $this->resolveExpressionNodeToType($node);
+            } else if ($node instanceof Tolerant\Node\ConstElement) {
+                return $this->getTypeFromExpressionNode($node->assignment);
+            } else if ($node instanceof Tolerant\Node\Expression\AssignmentExpression) {
+                return $this->getTypeFromExpressionNode($node);
             }
             // TODO: read @property tags of class
             // TODO: Try to infer the type from default value / constant value
@@ -982,15 +1015,15 @@ class DefinitionResolver
     }
 
     /**
-     * @param $docBlock
+     * @param DocBlock $docBlock
      * @param $variableName
-     * @return mixed
+     * @return DocBlock\Tags\Param | null
      */
-    private function getDocumentationForParameter($docBlock, $variableName) {
+    private function getDocBlockTagForParameter($docBlock, $variableName) {
         $tags = $docBlock->getTagsByName('param');
         foreach ($tags as $tag) {
             if ($tag->getVariableName() === $variableName) {
-                return $tag->getDescription()->render();
+                return $tag;
             }
         }
     }

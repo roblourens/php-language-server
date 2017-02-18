@@ -3,6 +3,7 @@
 namespace LanguageServer\Protocol;
 
 use PhpParser\{Error, Node};
+use Microsoft\PhpParser as Tolerant;
 
 /**
  * A range in a text document expressed as (zero-based) start and end positions.
@@ -29,11 +30,13 @@ class Range
      * @param Node $node
      * @return self
      */
-    public static function fromNode(Node $node)
+    public static function fromNode(Tolerant\Node $node)
     {
+        $range = Tolerant\PositionUtilities::getRangeFromPosition($node->getStart(), $node->getWidth(), $node->getFileContents());
+
         return new self(
-            new Position($node->getAttribute('startLine') - 1, $node->getAttribute('startColumn') - 1),
-            new Position($node->getAttribute('endLine') - 1, $node->getAttribute('endColumn'))
+            new Position($range->start->line, $range->start->character),
+            new Position($range->end->line, $range->end->character)
         );
     }
 
