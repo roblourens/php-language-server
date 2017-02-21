@@ -140,7 +140,7 @@ class DefinitionResolver
         );
     }
 
-    function isFunctionLike(Tolerant\Node $node) {
+    static function isFunctionLike(Tolerant\Node $node) {
         return
             $node instanceof Tolerant\Node\Statement\FunctionDeclaration ||
             $node instanceof Tolerant\Node\MethodDeclaration ||
@@ -479,10 +479,11 @@ class DefinitionResolver
      */
     private static function getDefinitionNodeForVariable(Tolerant\Node $var)
     {
+        $n = $var;
         // When a use is passed, start outside the closure to not return immediately
-        if ($var instanceof Node\Expr\ClosureUse) {
-            $n = $var->getAttribute('parentNode')->getAttribute('parentNode');
-            $name = $var->var;
+        if ($var instanceof Tolerant\Node\UseVariableName) {
+            $n = $var->getFirstAncestor(Tolerant\Node\Expression\AnonymousFunctionCreationExpression::class);
+            $name = $var->getName();
         } else if ($var instanceof Tolerant\Node\Expression\Variable || $var instanceof Tolerant\Node\Parameter) {
             $name = $var->getName();
         } else {
@@ -491,16 +492,16 @@ class DefinitionResolver
         // Traverse the AST up
         do {
             // If a function is met, check the parameters and use statements
-            if ($n instanceof Node\FunctionLike) {
-                foreach ($n->getParams() as $param) {
-                    if ($param->name === $name) {
+            if (self::isFunctionLike($n)) {
+                foreach ($n->parameters->getElements() as $param) {
+                    if ($param->getName() === $name) {
                         return $param;
                     }
                 }
                 // If it is a closure, also check use statements
-                if ($n instanceof Node\Expr\Closure) {
-                    foreach ($n->uses as $use) {
-                        if ($use->var === $name) {
+                if ($n instanceof Tolerant\Node\Expression\AnonymousFunctionCreationExpression) {
+                    foreach ($n->anonymousFunctionUseClause->useVariableNameList->getElements() as $use) {
+                        if ($use->getName() === $name) {
                             return $use;
                         }
                     }
@@ -508,17 +509,46 @@ class DefinitionResolver
                 break;
             }
             // Check each previous sibling node for a variable assignment to that variable
-            while ($n->getAttribute('previousSibling') && $n = $n->getAttribute('previousSibling')) {
+            while ($n->getPreviousSibling() && $n = $n->getPreviousSibling()) {
+                if ($n instanceof Tolerant\Node\Statement\ExpressionStatement) {
+                    $n = $n->expression;
+                }
                 if (
-                    ($n instanceof Node\Expr\Assign || $n instanceof Node\Expr\AssignOp)
-                    && $n->var instanceof Node\Expr\Variable && $n->var->name === $name
+                    ($n instanceof Tolerant\Node\Expression\AssignmentExpression && $n->operator->kind === Tolerant\TokenKind::EqualsToken)
+                    && $n->leftOperand instanceof Tolerant\Node\Expression\Variable && $n->leftOperand->getName() === $name
                 ) {
                     return $n;
                 }
             }
-        } while (isset($n) && $n = $n->getAttribute('parentNode'));
+        } while (isset($n) && $n = $n->getParent());
         // Return null if nothing was found
         return null;
+    }
+
+    private function isBooleanExpression($expression) : bool {
+        if (!($expression instanceof Tolerant\Node\Expression\BinaryExpression)) {
+            return false;
+        }
+        switch ($expression->operator->kind) {
+            case Tolerant\TokenKind::InstanceOfKeyword:
+            case Tolerant\TokenKind::GreaterThanToken:
+            case Tolerant\TokenKind::GreaterThanEqualsToken:
+            case Tolerant\TokenKind::LessThanToken:
+            case Tolerant\TokenKind::LessThanEqualsToken:
+            case Tolerant\TokenKind::AndKeyword:
+            case Tolerant\TokenKind::AmpersandAmpersandToken:
+            case Tolerant\TokenKind::LessThanEqualsGreaterThanToken:
+            case Tolerant\TokenKind::OrKeyword:
+            case Tolerant\TokenKind::BarBarToken:
+            case Tolerant\TokenKind::XorKeyword:
+            case Tolerant\TokenKind::ExclamationEqualsEqualsToken:
+            case Tolerant\TokenKind::ExclamationEqualsToken:
+            case Tolerant\TokenKind::CaretToken:
+            case Tolerant\TokenKind::EqualsEqualsEqualsToken:
+            case Tolerant\TokenKind::EqualsToken:
+                return true;
+        }
+        return false;
     }
 
     /**
@@ -526,52 +556,91 @@ class DefinitionResolver
      * If the type could not be resolved, returns Types\Mixed.
      *
      * @param \PhpParser\Node\Expr $expr
-     * @return \phpDocumentor\Type
+     * @return \phpDocumentor\Reflection\Type
      */
-    public function getTypeFromExpressionNode(Node\Expr $expr): Type
+    public function getTypeFromExpressionNode(Tolerant\Node $expr): Type
     {
-        if ($expr instanceof Node\Expr\Variable || $expr instanceof Node\Expr\ClosureUse) {
-            if ($expr instanceof Node\Expr\Variable && $expr->name === 'this') {
+        if ($expr instanceof Tolerant\Node\Expression\Variable || $expr instanceof Tolerant\Node\UseVariableName) {
+            if ($expr instanceof Tolerant\Node\Expression\Variable && $expr->getName() === 'this') {
                 return new Types\This;
             }
             // Find variable definition
             $defNode = $this->getDefinitionNodeForVariable($expr);
-            if ($defNode instanceof Node\Expr) {
+            if ($defNode instanceof Tolerant\Node\Expression) {
                 return $this->getTypeFromExpressionNode($defNode);
             }
-            if ($defNode instanceof Node\Param) {
+            if ($defNode instanceof Tolerant\Node\Parameter) {
                 return $this->getTypeFromNode($defNode);
             }
         }
-        if ($expr instanceof Node\Expr\FuncCall) {
+        if ($expr instanceof Tolerant\Node\Expression\CallExpression &&
+            !($expr->callableExpression instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression ||
+            $expr->callableExpression instanceof Tolerant\Node\Expression\MemberAccessExpression)) {
+
             // Find the function definition
-            if ($expr->name instanceof Node\Expr) {
+            if ($expr->callableExpression instanceof Tolerant\Node\Expression) {
                 // Cannot get type for dynamic function call
                 return new Types\Mixed;
             }
-            $fqn = (string)($expr->getAttribute('namespacedName') ?? $expr->name);
-            $def = $this->index->getDefinition($fqn, true);
-            if ($def !== null) {
-                return $def->type;
+
+            if ($expr->callableExpression instanceof Tolerant\Node\QualifiedName) {
+                $fqn = $expr->callableExpression->getResolvedName() ?? $expr->callableExpression->getNamespacedName();
+                $fqn .= "()";
+                $def = $this->index->getDefinition($fqn, true);
+                if ($def !== null) {
+                    return $def->type;
+                }
             }
+
+            /*
+            $isScopedPropertyAccess = $expr->callableExpression instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression;
+                $prefix = $isScopedPropertyAccess ?
+                $expr->callableExpression->scopeResolutionQualifier : $expr->callableExpression->dereferencableExpression;
+
+            if ($prefix instanceof Tolerant\Node\QualifiedName) {
+                $name = $prefix->getNamespacedName() ?? $prefix->getText();
+            } elseif ($prefix instanceof Tolerant\Token) {
+                // TODO DOES THIS EVER HAPPEN?
+                $name = $prefix->getText($expr->getText());
+            }
+
+            if (isset($name)) {
+                $memberNameText = $expr->callableExpression->memberName instanceof Node
+                    ? $expr->callableExpression->memberName->getText() : $expr->callableExpression->memberName->getText($expr->getFileContents());
+                $fqn = $name . ($isScopedPropertyAccess ? "::" : "->") . $memberNameText . "()";
+
+                $def = $this->index->getDefinition($fqn, true);
+                if ($def !== null) {
+                    return $def->type;
+                }
+            }*/
         }
-        if ($expr instanceof Node\Expr\ConstFetch) {
-            if (strtolower((string)$expr->name) === 'true' || strtolower((string)$expr->name) === 'false') {
-                return new Types\Boolean;
-            }
+        if (strtolower((string)$expr->getText()) === 'true' || strtolower((string)$expr->getText()) === 'false') {
+            return new Types\Boolean;
+        }
+
+        if ($this->isConstantFetch($expr)) {
             // Resolve constant
-            $fqn = (string)($expr->getAttribute('namespacedName') ?? $expr->name);
-            $def = $this->index->getDefinition($fqn, true);
-            if ($def !== null) {
-                return $def->type;
+            if ($expr instanceof Tolerant\Node\QualifiedName) {
+                $fqn = (string)$expr->getNamespacedName();
+                $def = $this->index->getDefinition($fqn, true);
+                if ($def !== null) {
+                    return $def->type;
+                }
             }
         }
-        if ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\PropertyFetch) {
-            if ($expr->name instanceof Node\Expr) {
+        if (($expr instanceof Tolerant\Node\Expression\CallExpression && ($expr->callableExpression instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression ||
+                $expr->callableExpression instanceof Tolerant\Node\Expression\MemberAccessExpression)) || $expr instanceof Tolerant\Node\Expression\MemberAccessExpression) {
+            if ($expr->callableExpression->memberName instanceof Tolerant\Node\Expression) {
                 return new Types\Mixed;
             }
+
+            $isScopedPropertyAccess = $expr->callableExpression instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression;
+            $var = $isScopedPropertyAccess ?
+                $expr->callableExpression->scopeResolutionQualifier : $expr->callableExpression->dereferencableExpression;
+
             // Resolve object
-            $objType = $this->getTypeFromExpressionNode($expr->var);
+            $objType = $this->getTypeFromExpressionNode($var);
             if (!($objType instanceof Types\Compound)) {
                 $objType = new Types\Compound([$objType]);
             }
@@ -586,8 +655,8 @@ class DefinitionResolver
                 } else {
                     $classFqn = substr((string)$t->getFqsen(), 1);
                 }
-                $fqn = $classFqn . '->' . $expr->name;
-                if ($expr instanceof Node\Expr\MethodCall) {
+                $fqn = $classFqn . '->' . $expr->memberName->getText($expr->getFileContents());
+                if ($expr instanceof Tolerant\Node\Expression\CallExpression) {
                     $fqn .= '()';
                 }
                 $def = $this->index->getDefinition($fqn);
@@ -619,110 +688,110 @@ class DefinitionResolver
             }
             return $def->type;
         }
-        if ($expr instanceof Node\Expr\New_) {
-            return self::getTypeFromClassName($expr->class);
+        if ($expr instanceof Tolerant\Node\Expression\ObjectCreationExpression) {
+            return self::getTypeFromClassName($expr->classTypeDesignator);
         }
-        if ($expr instanceof Node\Expr\Clone_ || $expr instanceof Node\Expr\Assign) {
-            return $this->getTypeFromExpressionNode($expr->expr);
+        if ($expr instanceof Tolerant\Node\Expression\CloneExpression) {
+            return $this->getTypeFromExpressionNode($expr->expression);
         }
-        if ($expr instanceof Node\Expr\Ternary) {
+        if ($expr instanceof Tolerant\Node\Expression\AssignmentExpression) {
+            return $this->getTypeFromExpressionNode($expr->rightOperand);
+        }
+        if ($expr instanceof Tolerant\Node\Expression\TernaryExpression) {
             // ?:
-            if ($expr->if === null) {
+            if ($expr->ifExpression === null) {
                 return new Types\Compound([
-                    $this->getTypeFromExpressionNode($expr->cond),
-                    $this->getTypeFromExpressionNode($expr->else)
+                    $this->getTypeFromExpressionNode($expr->condition), // why?
+                    $this->getTypeFromExpressionNode($expr->elseExpression)
                 ]);
             }
             // Ternary is a compound of the two possible values
             return new Types\Compound([
-                $this->getTypeFromExpressionNode($expr->if),
-                $this->getTypeFromExpressionNode($expr->else)
+                $this->getTypeFromExpressionNode($expr->ifExpression),
+                $this->getTypeFromExpressionNode($expr->elseExpression)
             ]);
         }
-        if ($expr instanceof Node\Expr\BinaryOp\Coalesce) {
+        if ($expr instanceof Tolerant\Node\Expression\BinaryExpression && $expr->operator->kind === Tolerant\TokenKind::QuestionQuestionToken) {
             // ?? operator
             return new Types\Compound([
-                $this->getTypeFromExpressionNode($expr->left),
-                $this->getTypeFromExpressionNode($expr->right)
+                $this->getTypeFromExpressionNode($expr->leftOperand),
+                $this->getTypeFromExpressionNode($expr->rightOperand)
             ]);
         }
         if (
-            $expr instanceof Node\Expr\InstanceOf_
-            || $expr instanceof Node\Expr\Cast\Bool_
-            || $expr instanceof Node\Expr\BooleanNot
-            || $expr instanceof Node\Expr\Empty_
-            || $expr instanceof Node\Expr\Isset_
-            || $expr instanceof Node\Expr\BinaryOp\Greater
-            || $expr instanceof Node\Expr\BinaryOp\GreaterOrEqual
-            || $expr instanceof Node\Expr\BinaryOp\Smaller
-            || $expr instanceof Node\Expr\BinaryOp\SmallerOrEqual
-            || $expr instanceof Node\Expr\BinaryOp\BooleanAnd
-            || $expr instanceof Node\Expr\BinaryOp\BooleanOr
-            || $expr instanceof Node\Expr\BinaryOp\LogicalAnd
-            || $expr instanceof Node\Expr\BinaryOp\LogicalOr
-            || $expr instanceof Node\Expr\BinaryOp\LogicalXor
-            || $expr instanceof Node\Expr\BinaryOp\NotEqual
-            || $expr instanceof Node\Expr\BinaryOp\NotIdentical
+            $this->isBooleanExpression($expr)
+
+            || ($expr instanceof Tolerant\Node\Expression\CastExpression && $expr->castType->kind === Tolerant\TokenKind::BoolCastToken)
+            || ($expr instanceof Tolerant\Node\Expression\UnaryOpExpression && $expr->operator->kind === Tolerant\TokenKind::ExclamationToken)
+            || $expr instanceof Tolerant\Node\Expression\EmptyIntrinsicExpression
+            || $expr instanceof Tolerant\Node\Expression\IssetIntrinsicExpression
         ) {
             return new Types\Boolean;
         }
         if (
-            $expr instanceof Node\Expr\Concat
-            || $expr instanceof Node\Expr\Cast\String_
-            || $expr instanceof Node\Expr\BinaryOp\Concat
-            || $expr instanceof Node\Expr\AssignOp\Concat
-            || $expr instanceof Node\Expr\Scalar\String_
-            || $expr instanceof Node\Expr\Scalar\Encapsed
-            || $expr instanceof Node\Expr\Scalar\EncapsedStringPart
-            || $expr instanceof Node\Expr\Scalar\MagicConst\Class_
-            || $expr instanceof Node\Expr\Scalar\MagicConst\Dir
-            || $expr instanceof Node\Expr\Scalar\MagicConst\Function_
-            || $expr instanceof Node\Expr\Scalar\MagicConst\Method
-            || $expr instanceof Node\Expr\Scalar\MagicConst\Namespace_
-            || $expr instanceof Node\Expr\Scalar\MagicConst\Trait_
+            ($expr instanceof Tolerant\Node\Expression\BinaryExpression &&
+            ($expr->operator->kind === Tolerant\TokenKind::DotToken || $expr->operator->kind === Tolerant\TokenKind::DotEqualsToken)) ||
+            $expr instanceof Tolerant\Node\StringLiteral ||
+            ($expr instanceof Tolerant\Node\Expression\CastExpression && $expr->castType->kind === Tolerant\TokenKind::StringCastToken)
+
+            // TODO
+//            || $expr instanceof Node\Expr\Scalar\String_
+//            || $expr instanceof Node\Expr\Scalar\Encapsed
+//            || $expr instanceof Node\Expr\Scalar\EncapsedStringPart
+//            || $expr instanceof Node\Expr\Scalar\MagicConst\Class_
+//            || $expr instanceof Node\Expr\Scalar\MagicConst\Dir
+//            || $expr instanceof Node\Expr\Scalar\MagicConst\Function_
+//            || $expr instanceof Node\Expr\Scalar\MagicConst\Method
+//            || $expr instanceof Node\Expr\Scalar\MagicConst\Namespace_
+//            || $expr instanceof Node\Expr\Scalar\MagicConst\Trait_
         ) {
             return new Types\String_;
         }
         if (
-            $expr instanceof Node\Expr\BinaryOp\Minus
-            || $expr instanceof Node\Expr\BinaryOp\Plus
-            || $expr instanceof Node\Expr\BinaryOp\Pow
-            || $expr instanceof Node\Expr\BinaryOp\Mul
-            || $expr instanceof Node\Expr\AssignOp\Minus
-            || $expr instanceof Node\Expr\AssignOp\Plus
-            || $expr instanceof Node\Expr\AssignOp\Pow
-            || $expr instanceof Node\Expr\AssignOp\Mul
+            $expr instanceof Tolerant\Node\Expression\BinaryExpression &&
+            ($operator = $expr->operator->kind)
+            && ($operator === Tolerant\TokenKind::PlusToken ||
+                $operator === Tolerant\TokenKind::AsteriskAsteriskToken ||
+                $operator === Tolerant\TokenKind::AsteriskToken ||
+                $operator === Tolerant\TokenKind::MinusToken ||
+                $operator === Tolerant\TokenKind::AsteriskEqualsToken||
+                $operator === Tolerant\TokenKind::AsteriskAsteriskEqualsToken ||
+                $operator === Tolerant\TokenKind::MinusEqualsToken ||
+                $operator === Tolerant\TokenKind::PlusEqualsToken // TODO - this should be a type of assigment expression
+            )
         ) {
             if (
-                $this->getTypeFromExpressionNode($expr->left) instanceof Types\Integer_
-                && $this->getTypeFromExpressionNode($expr->right) instanceof Types\Integer_
+                $this->getTypeFromExpressionNode($expr->leftOperand) instanceof Types\Integer_
+                && $this->getTypeFromExpressionNode($expr->rightOperand) instanceof Types\Integer_
             ) {
                 return new Types\Integer;
             }
             return new Types\Float_;
         }
         if (
-            $expr instanceof Node\Scalar\LNumber
-            || $expr instanceof Node\Expr\Cast\Int_
-            || $expr instanceof Node\Expr\Scalar\MagicConst\Line
-            || $expr instanceof Node\Expr\BinaryOp\Spaceship
-            || $expr instanceof Node\Expr\BinaryOp\BitwiseAnd
-            || $expr instanceof Node\Expr\BinaryOp\BitwiseOr
-            || $expr instanceof Node\Expr\BinaryOp\BitwiseXor
+            // TODO better naming
+            ($expr instanceof Tolerant\Node\NumericLiteral && $expr->children->kind === Tolerant\TokenKind::IntegerLiteralToken) ||
+            $expr instanceof Tolerant\Node\Expression\BinaryExpression && (
+                ($operator = $expr->operator->kind)
+                && ($operator === Tolerant\TokenKind::LessThanEqualsGreaterThanToken ||
+                    $operator === Tolerant\TokenKind::AmpersandToken ||
+                    $operator === Tolerant\TokenKind::CaretToken ||
+                    $operator === Tolerant\TokenKind::BarToken)
+            )
         ) {
             return new Types\Integer;
         }
         if (
-            $expr instanceof Node\Expr\BinaryOp\Div
-            || $expr instanceof Node\Expr\DNumber
-            || $expr instanceof Node\Expr\Cast\Double
+            $expr instanceof Tolerant\Node\NumericLiteral && $expr->children->kind === Tolerant\TokenKind::FloatingLiteralToken
+            ||
+            ($expr instanceof Tolerant\Node\Expression\CastExpression && $expr->castType->kind === Tolerant\TokenKind::DoubleCastToken)
         ) {
             return new Types\Float_;
         }
-        if ($expr instanceof Node\Expr\Array_) {
+        if ($expr instanceof Tolerant\Node\Expression\ArrayCreationExpression) {
             $valueTypes = [];
             $keyTypes = [];
-            foreach ($expr->items as $item) {
+            foreach ($expr->arrayElements->getElements() as $item) {
                 $valueTypes[] = $this->getTypeFromExpressionNode($item->value);
                 $keyTypes[] = $item->key ? $this->getTypeFromExpressionNode($item->key) : new Types\Integer;
             }
@@ -744,14 +813,14 @@ class DefinitionResolver
             }
             return new Types\Array_($valueType, $keyType);
         }
-        if ($expr instanceof Node\Expr\ArrayDimFetch) {
-            $varType = $this->getTypeFromExpressionNode($expr->var);
+        if ($expr instanceof Tolerant\Node\Expression\SubscriptExpression) {
+            $varType = $this->getTypeFromExpressionNode($expr->postfixExpression);
             if (!($varType instanceof Types\Array_)) {
                 return new Types\Mixed;
             }
             return $varType->getValueType();
         }
-        if ($expr instanceof Node\Expr\Include_) {
+        if ($expr instanceof Tolerant\Node\Expression\ScriptInclusionExpression) {
             // TODO: resolve path to PhpDocument and find return statement
             return new Types\Mixed;
         }
@@ -765,27 +834,27 @@ class DefinitionResolver
      * @param Node $class
      * @return Type
      */
-    private static function getTypeFromClassName(Node $class): Type
+    private static function getTypeFromClassName(Tolerant\Node $class): Type
     {
-        if ($class instanceof Node\Expr) {
+        if ($class instanceof Tolerant\Node\Expression) {
             return new Types\Mixed;
         }
-        if ($class instanceof Node\Stmt\Class_) {
+        if ($class instanceof Tolerant\Token && $class->kind === Tolerant\TokenKind::ClassKeyword) {
             // Anonymous class
             return new Types\Object_;
         }
-        $className = (string)$class;
+        $className = (string)$class->getResolvedName();
         if ($className === 'static') {
             return new Types\Static_;
         }
         if ($className === 'self' || $className === 'parent') {
-            $classNode = getClosestNode($class, Node\Stmt\Class_::class);
+            $classNode = $class->getFirstAncestor(Tolerant\Node\Statement\ClassDeclaration::class);
             if ($className === 'parent') {
-                if ($classNode === null || $classNode->extends === null) {
+                if ($classNode === null || $classNode->classBaseClause === null || $classNode->classBaseClause->baseClass === null) {
                     return new Types\Object_;
                 }
                 // parent is resolved to the parent class
-                $classFqn = (string)$classNode->extends;
+                $classFqn = (string)$classNode->classBaseClause->baseClass->getResolvedName();
             } else {
                 if ($classNode === null) {
                     return new Types\Self_;
@@ -824,7 +893,7 @@ class DefinitionResolver
 
             if ($docBlock !== null) {
                 $parameterDocBlockTag = $this->getDocBlockTagForParameter($docBlock, $variableName);
-                if ($parameterDocBlockTag->getType() !== null) {
+                if ($parameterDocBlockTag !== null && $parameterDocBlockTag->getType() !== null) {
                     return $parameterDocBlockTag->getType();
                 }
             }

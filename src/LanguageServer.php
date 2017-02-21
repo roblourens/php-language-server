@@ -254,7 +254,7 @@ class LanguageServer extends AdvancedJsonRpc\Dispatcher
             // Support "Find all references"
             $serverCapabilities->referencesProvider = false;
             // Support "Hover"
-            $serverCapabilities->hoverProvider = false;
+            $serverCapabilities->hoverProvider = true;
             // Support "Completion"
             $serverCapabilities->completionProvider = null;
 //            $serverCapabilities->completionProvider = new CompletionOptions;

@@ -67,44 +67,47 @@ class SymbolInformation
         } else if ($node instanceof Tolerant\Node\ConstElement) {
             $symbol->kind = SymbolKind::CONSTANT;
         }
-/*
+
         else if (
             (
-                ($node instanceof Node\Expr\Assign || $node instanceof Node\Expr\AssignOp)
-                && $node->var instanceof Node\Expr\Variable
+                ($node instanceof Tolerant\Node\Expression\AssignmentExpression)
+                && $node->leftOperand instanceof Tolerant\Node\Expression\Variable
             )
-            || $node instanceof Node\Expr\ClosureUse
-            || $node instanceof Node\Param
+            || $node instanceof Tolerant\Node\UseVariableName
+            || $node instanceof Tolerant\Node\Parameter
         ) {
             $symbol->kind = SymbolKind::VARIABLE;
         } else {
             return null;
         }
+
         if ($node instanceof Node\Name) {
             $symbol->name = (string)$node;
-        } else if ($node instanceof Node\Expr\Assign || $node instanceof Node\Expr\AssignOp) {
-            $symbol->name = $node->var->name;
-        } else if ($node instanceof Node\Expr\ClosureUse) {
-            $symbol->name = $node->var;
+        } else if ($node instanceof Tolerant\Node\Expression\AssignmentExpression) {
+            if ($node->leftOperand instanceof Tolerant\Node\Expression\Variable) {
+                $symbol->name = $node->leftOperand->getName();
+            } elseif ($node->leftOperand instanceof Tolerant\Token) {
+                $symbol->name = $node->leftOperand->getText($node->getFileContents());
+            }
+
+        } else if ($node instanceof Tolerant\Node\UseVariableName) {
+            $symbol->name = $node->getName();
         } else if (isset($node->name)) {
-            $symbol->name = (string)$node->name;
+            $symbol->name = (string)$node->name->getText($node->getFileContents());
         } else {
-            return null;
-        }*/
-        else {
             return null;
         }
 
-        if (isset($node->name)) {
-            if ($node->name instanceof Tolerant\Token) {
-                $symbol->name = $node->name->getText($node->getFileContents());
-                if ($node->name->kind === Tolerant\TokenKind::VariableName) {
-                    $symbol->name = substr($symbol->name, 1);
-                }
-            } elseif ($node->name instanceof Tolerant\Node) {
-                $symbol->name = $node->name->getText();
-            }
-        }
+//        if (isset($node->name)) {
+//            if ($node->name instanceof Tolerant\Token) {
+//                $symbol->name = $node->name->getText($node->getFileContents());
+//                if ($node->name->kind === Tolerant\TokenKind::VariableName) {
+//                    $symbol->name = substr($symbol->name, 1);
+//                }
+//            } elseif ($node->name instanceof Tolerant\Node) {
+//                $symbol->name = $node->name->getText();
+//            }
+//        }
 
         $symbol->location = Location::fromTolerantNode($node);
         if ($fqn !== null) {
