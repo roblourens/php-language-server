@@ -87,13 +87,13 @@ class SymbolInformation
             if ($node->leftOperand instanceof Tolerant\Node\Expression\Variable) {
                 $symbol->name = $node->leftOperand->getName();
             } elseif ($node->leftOperand instanceof Tolerant\Token) {
-                $symbol->name = $node->leftOperand->getText($node->getFileContents());
+                $symbol->name = trim($node->leftOperand->getText($node->getFileContents()), "$");
             }
 
         } else if ($node instanceof Tolerant\Node\UseVariableName) {
             $symbol->name = $node->getName();
         } else if (isset($node->name)) {
-            $symbol->name = (string)$node->name->getText($node->getFileContents());
+            $symbol->name = trim((string)$node->name->getText($node->getFileContents()), "$");
         } else {
             return null;
         }

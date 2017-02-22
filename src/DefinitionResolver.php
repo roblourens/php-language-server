@@ -17,7 +17,7 @@ class DefinitionResolver
     /**
      * @var \LanguageServer\Index
      */
-    private $index;
+    public $index;
 
     /**
      * @var \phpDocumentor\Reflection\TypeResolver
@@ -315,7 +315,8 @@ class DefinitionResolver
             }
 
             return $name;
-        } elseif ($node instanceof Tolerant\Node\Expression\CallExpression || ($node = $node->getFirstAncestor(Tolerant\Node\Expression\CallExpression::class)) !== null) {
+        }
+        /*elseif ($node instanceof Tolerant\Node\Expression\CallExpression || ($node = $node->getFirstAncestor(Tolerant\Node\Expression\CallExpression::class)) !== null) {
             if ($node->callableExpression instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression) {
                 $qualifier = $node->callableExpression->scopeResolutionQualifier;
                 if ($qualifier instanceof Tolerant\Token) {
@@ -335,15 +336,18 @@ class DefinitionResolver
                     return $name;
                 }
             }
-        }
-/*
-        else if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\PropertyFetch) {
-            if ($node->name instanceof Node\Expr) {
+        }*/
+
+        else if (($node instanceof Tolerant\Node\Expression\CallExpression &&
+                ($access = $node->callableExpression) instanceof Tolerant\Node\Expression\MemberAccessExpression) || (
+            ($access = $node) instanceof Tolerant\Node\Expression\MemberAccessExpression
+            )) {
+            if ($access->memberName instanceof Tolerant\Node\Expression) {
                 // Cannot get definition if right-hand side is expression
                 return null;
             }
             // Get the type of the left-hand expression
-            $varType = $this->resolveExpressionNodeToType($node->var);
+            $varType = $this->getTypeFromExpressionNode($access->dereferencableExpression);
             if ($varType instanceof Types\Compound) {
                 // For compound types, use the first FQN we find
                 // (popular use case is ClassName|null)
@@ -372,8 +376,8 @@ class DefinitionResolver
             } else {
                 $classFqn = substr((string)$varType->getFqsen(), 1);
             }
-            $memberSuffix = '->' . (string)$node->name;
-            if ($node instanceof Node\Expr\MethodCall) {
+            $memberSuffix = '->' . (string)($access->memberName->getText() ?? $access->memberName->getText($node->getFileContents()));
+            if ($node instanceof Tolerant\Node\Expression\CallExpression) {
                 $memberSuffix .= '()';
             }
             // Find the right class that implements the member
@@ -398,34 +402,33 @@ class DefinitionResolver
             }
             return $classFqn . $memberSuffix;
         }
-        else if ($parent instanceof Node\Expr\FuncCall && $node instanceof Node\Name) {
+        else if ($parent->parent instanceof Tolerant\Node\Expression\CallExpression && $node instanceof Tolerant\Node\DelimitedList\QualifiedNameParts) {
             if ($parent->name instanceof Node\Expr) {
                 return null;
             }
-            $name = (string)($node->getAttribute('namespacedName') ?? $parent->name);
+            $name = (string)($parent->getNamespacedName());
         }
-        else if ($parent instanceof Node\Expr\ConstFetch && $node instanceof Node\Name) {
-            $name = (string)($node->getAttribute('namespacedName') ?? $parent->name);
+        else if ($this->isConstantFetch($node)) {
+            $name = (string)($node->getNamespacedName());
         }
         else if (
-            $node instanceof Node\Expr\ClassConstFetch
-            || $node instanceof Node\Expr\StaticPropertyFetch
-            || $node instanceof Node\Expr\StaticCall
+        ($scoped = $node) instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression
+            || ($node instanceof Tolerant\Node\Expression\CallExpression && ($scoped = $node->callableExpression) instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression)
         ) {
-            if ($node->class instanceof Node\Expr || $node->name instanceof Node\Expr) {
+            if ($scoped->memberName instanceof Tolerant\Node\Expression) {
                 // Cannot get definition of dynamic names
                 return null;
             }
-            $className = (string)$node->class;
+            $className = (string)$scoped->scopeResolutionQualifier->getText();
             if ($className === 'self' || $className === 'static' || $className === 'parent') {
                 // self and static are resolved to the containing class
-                $classNode = getClosestNode($node, Node\Stmt\Class_::class);
+                $classNode = $node->getFirstAncestor(Tolerant\Node\Statement\ClassDeclaration::class);
                 if ($classNode === null) {
                     return null;
                 }
                 if ($className === 'parent') {
                     // parent is resolved to the parent class
-                    if (!isset($n->extends)) {
+                    if (!isset($node->extends)) {
                         return null;
                     }
                     $className = (string)$classNode->extends;
@@ -433,10 +436,10 @@ class DefinitionResolver
                     $className = (string)$classNode->namespacedName;
                 }
             }
-            if ($node instanceof Node\Expr\StaticPropertyFetch) {
-                $name = (string)$className . '::$' . $node->name;
+            if ($scoped->memberName instanceof Tolerant\Node\Expression\Variable) {
+                $name = (string)$className . '::$' . $scoped->memberName->getName();
             } else {
-                $name = (string)$className . '::' . $node->name;
+                $name = (string)$className . '::' . $scoped->memberName->getText($node->getFileContents());
             }
         }
         else {
@@ -446,13 +449,11 @@ class DefinitionResolver
             return null;
         }
         if (
-            $node instanceof Node\Expr\MethodCall
-            || $node instanceof Node\Expr\StaticCall
-            || $parent instanceof Node\Expr\FuncCall
+            $node instanceof Tolerant\Node\Expression\CallExpression
         ) {
             $name .= '()';
         }
-        return $name;*/
+        return $name;
     }
 
     /**
@@ -493,10 +494,13 @@ class DefinitionResolver
         do {
             // If a function is met, check the parameters and use statements
             if (self::isFunctionLike($n)) {
+                if ($n->parameters !== null) {
+
                 foreach ($n->parameters->getElements() as $param) {
                     if ($param->getName() === $name) {
                         return $param;
                     }
+                }
                 }
                 // If it is a closure, also check use statements
                 if ($n instanceof Tolerant\Node\Expression\AnonymousFunctionCreationExpression) {
@@ -629,15 +633,14 @@ class DefinitionResolver
                 }
             }
         }
-        if (($expr instanceof Tolerant\Node\Expression\CallExpression && ($expr->callableExpression instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression ||
-                $expr->callableExpression instanceof Tolerant\Node\Expression\MemberAccessExpression)) || $expr instanceof Tolerant\Node\Expression\MemberAccessExpression) {
-            if ($expr->callableExpression->memberName instanceof Tolerant\Node\Expression) {
+        if (($expr instanceof Tolerant\Node\Expression\CallExpression &&
+            ($access = $expr->callableExpression) instanceof Tolerant\Node\Expression\MemberAccessExpression)
+            || ($access = $expr) instanceof Tolerant\Node\Expression\MemberAccessExpression) {
+            if ($access->memberName instanceof Tolerant\Node\Expression) {
                 return new Types\Mixed;
             }
 
-            $isScopedPropertyAccess = $expr->callableExpression instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression;
-            $var = $isScopedPropertyAccess ?
-                $expr->callableExpression->scopeResolutionQualifier : $expr->callableExpression->dereferencableExpression;
+            $var = $access->dereferencableExpression;
 
             // Resolve object
             $objType = $this->getTypeFromExpressionNode($var);
@@ -655,7 +658,7 @@ class DefinitionResolver
                 } else {
                     $classFqn = substr((string)$t->getFqsen(), 1);
                 }
-                $fqn = $classFqn . '->' . $expr->memberName->getText($expr->getFileContents());
+                $fqn = $classFqn . '->' . $access->memberName->getText($expr->getFileContents());
                 if ($expr instanceof Tolerant\Node\Expression\CallExpression) {
                     $fqn .= '()';
                 }
@@ -666,20 +669,19 @@ class DefinitionResolver
             }
         }
         if (
-            $expr instanceof Node\Expr\StaticCall
-            || $expr instanceof Node\Expr\StaticPropertyFetch
-            || $expr instanceof Node\Expr\ClassConstFetch
+            $expr instanceof Tolerant\Node\Expression\CallExpression && ($scopedAccess = $expr->callableExpression) instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression
+            || ($scopedAccess = $expr) instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression
         ) {
-            $classType = self::getTypeFromClassName($expr->class);
-            if (!($classType instanceof Types\Object_) || $classType->getFqsen() === null || $expr->name instanceof Node\Expr) {
+            $classType = self::getTypeFromClassName($scopedAccess->scopeResolutionQualifier);
+            if (!($classType instanceof Types\Object_) || $classType->getFqsen() === null /*|| $expr->name instanceof Tolerant\Node\Expression*/) {
                 return new Types\Mixed;
             }
             $fqn = substr((string)$classType->getFqsen(), 1) . '::';
-            if ($expr instanceof Node\Expr\StaticPropertyFetch) {
+            if ($expr instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression && $expr->name instanceof Tolerant\Node\Expression\Variable) {
                 $fqn .= '$';
             }
-            $fqn .= $expr->name;
-            if ($expr instanceof Node\Expr\StaticCall) {
+            $fqn .= $expr->name->getText() ?? $expr->name->getText($expr->getFileContents()); // TODO is there a cleaner way to do this?
+            if ($expr instanceof Tolerant\Node\Expression\CallExpression) {
                 $fqn .= '()';
             }
             $def = $this->index->getDefinition($fqn);
@@ -1054,7 +1056,7 @@ class DefinitionResolver
             if ($propertyDeclaration->isStatic()) {
                 // Static Property: use ClassName::$propertyName as name
                 return (string)$classDeclaration->getNamespacedName() . '::$' . (string)$node->getName();
-            } elseif ($name = $node->getName() !== null) {
+            } elseif (($name = $node->getName()) !== null) {
                 // Instance Property: use ClassName->propertyName as name
                 return (string)$classDeclaration->getNamespacedName() . '->' . $name;
             }
