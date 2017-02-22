@@ -433,7 +433,7 @@ class DefinitionResolver
                     }
                     $className = (string)$classNode->extends;
                 } else {
-                    $className = (string)$classNode->namespacedName;
+                    $className = (string)$classNode->getNamespacedName();
                 }
             }
             if ($scoped->memberName instanceof Tolerant\Node\Expression\Variable) {
@@ -677,10 +677,10 @@ class DefinitionResolver
                 return new Types\Mixed;
             }
             $fqn = substr((string)$classType->getFqsen(), 1) . '::';
-            if ($expr instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression && $expr->name instanceof Tolerant\Node\Expression\Variable) {
+            if ($expr instanceof Tolerant\Node\Expression\ScopedPropertyAccessExpression && $expr->memberName instanceof Tolerant\Node\Expression\Variable) {
                 $fqn .= '$';
             }
-            $fqn .= $expr->name->getText() ?? $expr->name->getText($expr->getFileContents()); // TODO is there a cleaner way to do this?
+            $fqn .= $scopedAccess->memberName->getText() ?? $scopedAccess->memberName->getText($expr->getFileContents()); // TODO is there a cleaner way to do this?
             if ($expr instanceof Tolerant\Node\Expression\CallExpression) {
                 $fqn .= '()';
             }
